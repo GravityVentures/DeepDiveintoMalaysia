@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF Viewer</title>
+  <style>
+    :root { --bg:#0e0e0f; --fg:#e8e8ea; }
+    html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); }
+    .viewer, iframe { position:fixed; inset:0; width:100%; height:100%; border:0; background:var(--bg); }
+    body { overscroll-behavior:none; }
+
+    /* Mobile scroll renderer */
+    #mobile-root { position:fixed; inset:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:12px 0 48px; display:none; }
+    #pages { display:flex; flex-direction:column; align-items:center; gap:12px; }
+    canvas { display:block; box-shadow:0 2px 24px rgba(0,0,0,.35); border-radius:6px; background:#111; }
+    #loading { position:fixed; top:12px; left:50%; transform:translateX(-50%); font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; opacity:.9; }
+    #fallback { display:none; position:absolute; inset:0; place-items:center; }
+    a { color:#9cf; }
+  </style>
+</head>
+<body>
+  <!-- Desktop: native inline PDF -->
+  <iframe id="desktop-frame" class="viewer" src="https://Cam-Choi.github.io/pdf-lander/document.pdf" title="PDF"></iframe>
+
+  <!-- Mobile: scroll-only, high-DPI pre-render -->
+  <div id="mobile-root" aria-live="polite">
+    <div id="loading">Loading PDF…</div>
+    <div id="pages"></div>
+    <div id="fallback">
+      <p>Unable to display. <a href="https://Cam-Choi.github.io/pdf-lander/document.pdf">Open the file</a>.</p>
+    </div>
+  </div>
+
+  <script>
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const PDF_URL  = "https://Cam-Choi.github.io/pdf-lander/document.pdf";
+
+    if (!isMobile) {
+      document.getElementById('desktop-frame').style.display = 'block';
+    } else {
+      document.getElementById('desktop-frame').style.display = 'none';
+      document.getElementById('mobile-root').style.display = 'block';
+
+      const s = document.createElement('script');
+      s.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
+      s.onload = startMobileRender;
+      s.onerror = () => document.getElementById('fallback').style.display = 'grid';
+      document.head.appendChild(s);
+    }
+
+    function startMobileRender() {
+      const pdfjsLib = window.pdfjsLib;
+      if (!pdfjsLib) { document.getElementById('fallback').style.display = 'grid'; return; }
+
+      // Keep it bulletproof: avoid separate worker fetch
+      const getDocOpts = { url: PDF_URL, disableWorker: true };
+
+      const pagesEl = document.getElementById('pages');
+      const loading = document.getElementById('loading');
+
+      // ---- Tweak these two knobs if you want ----
+      const DPR_CAP = 5; 
+      const QUALITY_BOOST = 2; 
+      // ------------------------------------------
+
+      const DPR = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+
+      pdfjsLib.getDocument(getDocOpts).promise.then(async (pdf) => {
+        const total = pdf.numPages;
+        if (!total) throw new Error("Empty PDF");
+
+        for (let p = 1; p <= total; p++) {
+          loading.textContent = `Rendering ${p}/${total}…`;
+          const page = await pdf.getPage(p);
+
+          // Fit to screen width (CSS), then render with extra pixels for crispness
+          const unscaled = page.getViewport({ scale: 1 });
+          const cssWidth = Math.min(document.documentElement.clientWidth, window.innerWidth) - 16; // side padding
+          const fitScale = Math.max(0.1, cssWidth / unscaled.width);
+
+          const renderScale = fitScale * DPR * QUALITY_BOOST; // high-res pre-render
+          const viewport = page.getViewport({ scale: renderScale });
+
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d', { alpha: false });
+
+          // Pixel buffer size (large for sharpness)
+          canvas.width  = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+
+          // CSS size = logical fit width; this lets pinch-zoom look sharper for longer
+          canvas.style.width  = Math.floor(viewport.width  / (DPR * QUALITY_BOOST)) + 'px';
+          canvas.style.height = Math.floor(viewport.height / (DPR * QUALITY_BOOST)) + 'px';
+
+          // Smoothing can help on some pages with images
+          if (typeof ctx.imageSmoothingEnabled === 'boolean') ctx.imageSmoothingEnabled = true;
+
+          pagesEl.appendChild(canvas);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+        }
+
+        loading.remove();
+      }).catch(err => {
+        console.error(err);
+        loading.remove();
+        document.getElementById('fallback').style.display = 'grid';
+      });
+    }
+  </script>
+</body>
+</html>
